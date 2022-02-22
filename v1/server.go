@@ -179,11 +179,17 @@ func (server *Server) GetRegisteredTask(name string) (interface{}, error) {
 
 // SendTaskWithContext will inject the trace context in the signature headers before publishing it
 func (server *Server) SendTaskWithContext(ctx context.Context, signature *tasks.Signature) (*result.AsyncResult, error) {
-	span, _ := opentracing.StartSpanFromContext(ctx, "SendTask", tracing.ProducerOption(), tracing.MachineryTag)
-	defer span.Finish()
+	// span, _ := opentracing.StartSpanFromContext(ctx, "SendTask", tracing.ProducerOption(), tracing.MachineryTag)
+	// defer span.Finish()
 
 	// tag the span with some info about the signature
-	signature.Headers = tracing.HeadersWithSpan(signature.Headers, span)
+	// signature.Headers = tracing.HeadersWithSpan(signature.Headers, span)
+	if signature.Headers == nil {
+		signature.Headers = make(tasks.Headers)
+	}
+	if ctx.Value("request_id") != nil {
+		signature.Headers["parent_request_id"] = ctx.Value("request_id")
+	}
 
 	// Make sure result backend is defined
 	if server.backend == nil {

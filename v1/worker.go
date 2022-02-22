@@ -1,6 +1,7 @@
 package machinery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -10,14 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/opentracing/opentracing-go"
-	
 	"github.com/RichardKnop/machinery/v1/backends/amqp"
 	"github.com/RichardKnop/machinery/v1/brokers/errs"
+	"github.com/RichardKnop/machinery/v1/gctx"
 	"github.com/RichardKnop/machinery/v1/log"
 	"github.com/RichardKnop/machinery/v1/retry"
 	"github.com/RichardKnop/machinery/v1/tasks"
-	"github.com/RichardKnop/machinery/v1/tracing"
 )
 
 // Worker represents a single worker process
@@ -147,21 +146,25 @@ func (worker *Worker) Process(signature *tasks.Signature) error {
 		return fmt.Errorf("Set state to 'received' for task %s returned error: %s", signature.UUID, err)
 	}
 
+	ctx := gctx.Background()
+	ctx.Set("parent_request_id", signature.Headers["parent_request_id"])
+
 	// Prepare task for processing
 	task, err := tasks.NewWithSignature(taskFunc, signature)
 	// if this failed, it means the task is malformed, probably has invalid
 	// signature, go directly to task failed without checking whether to retry
 	if err != nil {
-		worker.taskFailed(signature, err)
+		worker.taskFailed(ctx, signature, err)
 		return err
 	}
 
 	// try to extract trace span from headers and add it to the function context
 	// so it can be used inside the function if it has context.Context as the first
 	// argument. Start a new span if it isn't found.
-	taskSpan := tracing.StartSpanFromHeaders(signature.Headers, signature.Name)
-	tracing.AnnotateSpanWithSignatureInfo(taskSpan, signature)
-	task.Context = opentracing.ContextWithSpan(task.Context, taskSpan)
+	// taskSpan := tracing.StartSpanFromHeaders(signature.Headers, signature.Name)
+	// tracing.AnnotateSpanWithSignatureInfo(taskSpan, signature)
+	// task.Context = opentracing.ContextWithSpan(task.Context, taskSpan)
+	task.Context = ctx
 
 	// Update task state to STARTED
 	if err = worker.server.GetBackend().SetStateStarted(signature); err != nil {
@@ -194,10 +197,10 @@ func (worker *Worker) Process(signature *tasks.Signature) error {
 			return worker.taskRetry(signature)
 		}
 
-		return worker.taskFailed(signature, err)
+		return worker.taskFailed(ctx, signature, err)
 	}
 
-	return worker.taskSucceeded(signature, results)
+	return worker.taskSucceeded(ctx, signature, results)
 }
 
 // retryTask decrements RetryCount counter and republishes the task to the queue
@@ -244,7 +247,7 @@ func (worker *Worker) retryTaskIn(signature *tasks.Signature, retryIn time.Durat
 
 // taskSucceeded updates the task state and triggers success callbacks or a
 // chord callback if this was the last task of a group with a chord callback
-func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*tasks.TaskResult) error {
+func (worker *Worker) taskSucceeded(ctx context.Context, signature *tasks.Signature, taskResults []*tasks.TaskResult) error {
 	// Update task state to SUCCESS
 	if err := worker.server.GetBackend().SetStateSuccess(signature, taskResults); err != nil {
 		return fmt.Errorf("Set state to 'success' for task %s returned error: %s", signature.UUID, err)
@@ -273,7 +276,7 @@ func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*t
 			}
 		}
 
-		worker.server.SendTask(successTask)
+		worker.server.SendTaskWithContext(ctx, successTask)
 	}
 
 	// If the task was not part of a group, just return
@@ -358,7 +361,7 @@ func (worker *Worker) taskSucceeded(signature *tasks.Signature, taskResults []*t
 }
 
 // taskFailed updates the task state and triggers error callbacks
-func (worker *Worker) taskFailed(signature *tasks.Signature, taskErr error) error {
+func (worker *Worker) taskFailed(ctx context.Context, signature *tasks.Signature, taskErr error) error {
 	// Update task state to FAILURE
 	if err := worker.server.GetBackend().SetStateFailure(signature, taskErr.Error()); err != nil {
 		return fmt.Errorf("Set state to 'failure' for task %s returned error: %s", signature.UUID, err)
@@ -378,7 +381,7 @@ func (worker *Worker) taskFailed(signature *tasks.Signature, taskErr error) erro
 			Value: taskErr.Error(),
 		}}, errorTask.Args...)
 		errorTask.Args = args
-		worker.server.SendTask(errorTask)
+		worker.server.SendTaskWithContext(ctx, errorTask)
 	}
 
 	if signature.StopTaskDeletionOnError {
