@@ -147,6 +147,7 @@ func (worker *Worker) Process(signature *tasks.Signature) error {
 	}
 
 	ctx := gctx.Background()
+	ctx.Set("request_id", signature.UUID)
 	ctx.Set("parent_request_id", signature.Headers["parent_request_id"])
 
 	// Prepare task for processing

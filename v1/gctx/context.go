@@ -1,11 +1,8 @@
 package gctx
 
 import (
-	"fmt"
 	"sync"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type Context struct {
@@ -17,12 +14,9 @@ type Context struct {
 }
 
 func Background() *Context {
-	taskID := uuid.New().String()
 	c := &Context{
-		mu: sync.RWMutex{},
-		Keys: map[string]interface{}{
-			"request_id": fmt.Sprintf("job_%v", taskID),
-		},
+		mu:   sync.RWMutex{},
+		Keys: make(map[string]interface{}),
 	}
 	return c
 }
